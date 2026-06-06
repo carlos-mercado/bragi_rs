@@ -11,6 +11,8 @@ pub struct TrackDetails {
     pub title: String,
     pub date: String,
     pub track_no: u32,
+    pub song_path: String,
+    pub duration: u64,
 }
 
 impl From<TrackDetails> for Text<'static> {
@@ -20,7 +22,7 @@ impl From<TrackDetails> for Text<'static> {
             track.artist,
             track.title,
             track.date,
-            track.track_no
+            track.track_no,
         ))
     }
 }
@@ -37,6 +39,10 @@ impl From<&TrackDetails> for Line<'static> {
     }
 }
 
+// this is recusive dfs with no cycle checks
+// idk if cylces are possible to create in file systems 
+// maybe with symlinks, but i don't wan't to deal 
+// with that right now
 pub fn get_music_files(path: &Path, songs: &mut Vec<TrackDetails>) -> io::Result<()> {
     let mut it : fs::ReadDir = fs::read_dir(path)?;
 
@@ -58,7 +64,10 @@ pub fn get_music_files(path: &Path, songs: &mut Vec<TrackDetails>) -> io::Result
             );
 
             if is_audio {
-                songs.push(get_audio_metadata(&path).unwrap());
+                match get_audio_metadata(&path) {
+                    Ok(ans) => songs.push(ans),
+                    _ => {}
+                }
             }
 
         }
@@ -70,10 +79,10 @@ pub fn get_music_files(path: &Path, songs: &mut Vec<TrackDetails>) -> io::Result
 fn get_audio_metadata(path: &Path) -> Result<TrackDetails, Box<dyn std::error::Error>> {
     let tagged_file : TaggedFile = read_from_path(path)?;
     let tag = tagged_file.primary_tag().unwrap();
-    let title = tag.title().unwrap().to_string();
-    let artist = tag.artist().unwrap().to_string();
-    let date = tag.date().unwrap().to_string();
-    let track_no = tag.track().unwrap();
-
-    Ok(TrackDetails {artist, title, date, track_no})
+    let title = tag.title().unwrap_or("Unknown Title".into()).to_string();
+    let artist = tag.artist().unwrap_or("Unknown Artist".into()).to_string();
+    let date = tag.date().unwrap_or(lofty::tag::items::Timestamp { year: (1900), month: (Some(1)), day: (Some(1)), hour: (Some(0)), minute: (Some(0)), second: (Some(0)) }).to_string();
+    let track_no = tag.track().unwrap_or(0);
+    let duration = tagged_file.properties().duration().as_secs();
+    Ok(TrackDetails {artist, title, date, track_no, song_path: path.to_string_lossy().to_string(), duration})
 }

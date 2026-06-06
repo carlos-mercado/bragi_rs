@@ -1,4 +1,5 @@
 use music::*;
+use rodio::source::TrackPosition;
 //use rodio::MixerDeviceSink;
 //use std::sync::{Mutex, Arc};
 use std::time::Duration;
@@ -7,7 +8,7 @@ use std::io::BufReader;
 use std::fs::{File};
 use std::path::Path;
 use std::sync::mpsc::channel;
-use std::sync::mpsc::{Sender, Receiver, RecvTimeoutError};
+use std::sync::mpsc::{Sender, Receiver};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{
     prelude::Line,
@@ -39,34 +40,15 @@ impl App {
         let (sender, receiver): (Sender<TrackDetails>, Receiver<TrackDetails>) = channel();
 
         let _thread_handle = thread::spawn(move || {
-            let mut current_track = match receiver.recv() {
-                Ok(track_info) => track_info,
-                Err(_) => return,
-            };
-
-            loop {
-                let song_path = current_track.song_path.clone();
-                let duration = Duration::from_secs(current_track.duration);
+            while let Ok(track_info) = receiver.recv() {
+                let song_path = track_info.song_path;
+                let duration = Duration::from_secs(track_info.duration);
                 let file = BufReader::new(File::open(song_path).unwrap());
-                let player = rodio::play(handle.mixer(), file).unwrap();
+                let _player = rodio::play(handle.mixer(), file).unwrap();
 
                 match receiver.recv_timeout(duration) {
-                    Ok(new_track_info) => { 
-                        // got a new track, update the player with the current one
-                        std::mem::drop(player);
-                        current_track = new_track_info;
-                    },
-                    Err(RecvTimeoutError::Timeout) => {
-                        // fisnished the song naturally, wait for a new one to start over again
-                        std::mem::drop(player);
-                        current_track = match receiver.recv() {
-                            Ok(track_info) => track_info,
-                            Err(_) => return,
-                        }
-
-
-                    },
-                    Err(_) => break,
+                    Ok(new_track_info) => { continue; }
+                    _ => {};l
                 }
 
             }
