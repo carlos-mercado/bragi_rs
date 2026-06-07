@@ -23,19 +23,28 @@ fn main() -> io::Result<()> {
     ratatui::run(|terminal| App::new().run(terminal))
 }
 
+#[derive(PartialEq)]
+enum Mode { Search, Normal }
+
 pub struct App {
     counter: u32,
     exit: bool,
     songs: Vec<TrackDetails>,
     selected: Option<TrackDetails>,
     sender: Sender<TrackDetails>,
+    mode: Mode,
+    search_buff: String,
+    unfiltered_songs: Vec<TrackDetails>,
 }
 
 impl App {
     pub fn new() -> App {
         let mut songs_vec : Vec<TrackDetails> = vec![];
         get_music_files(Path::new("/home/carlos/Music"), &mut songs_vec).unwrap();
-        let handle = rodio::DeviceSinkBuilder::open_default_sink().expect("Open default audio stream");
+        let songs_vec_clone = songs_vec.clone();
+        let handle = rodio::DeviceSinkBuilder::open_default_sink()
+            .expect("Could not find default audio stream");
+
         let (sender, receiver): (Sender<TrackDetails>, Receiver<TrackDetails>) = channel();
 
         let _thread_handle = thread::spawn(move || {
@@ -45,6 +54,7 @@ impl App {
             };
 
             loop {
+
                 let song_path = current_track.song_path.clone();
                 let duration = Duration::from_secs(current_track.duration);
                 let file = BufReader::new(File::open(song_path).unwrap());
@@ -52,7 +62,9 @@ impl App {
 
                 match receiver.recv_timeout(duration) {
                     Ok(new_track_info) => { 
-                        // got a new track, update the player with the current one
+                        // got a new track, 
+                        // get rid of the current player
+                        // and start up a new one next iteration
                         std::mem::drop(player);
                         current_track = new_track_info;
                     },
@@ -78,6 +90,9 @@ impl App {
             songs: songs_vec,
             selected: None,
             sender,
+            mode: Mode::Normal,
+            search_buff: String::new(),
+            unfiltered_songs: songs_vec_clone,
         }
     }
 
@@ -104,17 +119,59 @@ impl App {
     }
 
     fn handle_key_event(&mut self, key_event: KeyEvent) {
-        match key_event.code {
-            KeyCode::Char('q') => self.exit(),
-            KeyCode::Char('j') => self.increment_counter(),
-            KeyCode::Char('k') => self.decrement_counter(),
-            KeyCode::Enter => {
-                self.selected = Some(self.songs[self.counter as usize].clone());
-                let selected = self.selected.clone();
-                self.sender.send(selected.unwrap())
-                    .expect("Could not send through channel");
-            },
-            _ => {}
+        if self.mode == Mode::Normal {
+            match key_event.code {
+                KeyCode::Char('q') => self.exit(),
+                KeyCode::Char('j') => self.increment_counter(),
+                KeyCode::Char('k') => self.decrement_counter(),
+                KeyCode::Char('/') => self.mode = Mode::Search,
+                KeyCode::Esc => {
+                    self.search_buff.clear();
+                    self.mode = Mode::Normal;
+                    self.songs = self.unfiltered_songs.clone();
+                },
+                KeyCode::Enter => {
+                    self.selected = Some(self.songs[self.counter as usize].clone());
+                    let selected = self.selected.clone();
+                    self.sender.send(selected.unwrap())
+                        .expect("Could not send through channel");
+                },
+                _ => {}
+            }
+        }
+        else {
+
+            match key_event.code {
+                KeyCode::Char(c) => {
+                    self.search_buff.push(c);
+                    let result: Vec<TrackDetails> = self.songs
+                        .iter()
+                        .cloned()
+                        .filter(|x| x.artist.contains(&self.search_buff))
+                        .collect();
+                    self.songs = result;
+                }
+                KeyCode::Backspace => {
+                    self.search_buff.pop();
+                    self.songs = self.unfiltered_songs.clone();
+                    let result: Vec<TrackDetails> = self.songs
+                        .iter()
+                        .cloned()
+                        .filter(|x| x.artist.contains(&self.search_buff))
+                        .collect();
+                    self.songs = result;
+                },
+                KeyCode::Enter => {
+                    self.search_buff.clear();
+                    self.mode = Mode::Normal;
+                },
+                KeyCode::Esc => {
+                    self.search_buff.clear();
+                    self.mode = Mode::Normal;
+                    self.songs = self.unfiltered_songs.clone();
+                },
+                _ => {}
+            }
         }
     }
 
@@ -156,8 +213,13 @@ impl Widget for &App {
 
         }
 
+        let selection_string = match self.mode {
+            Mode::Normal => String::from("Playlist"),
+            Mode::Search => format!("Searching: {}", self.search_buff),
+        };
+
         let music_selection = List::new(self.songs.clone())
-                .block(Block::bordered().title_top("Playlist"))
+                .block(Block::bordered().title_top(selection_string))
                 .style(ratatui::style::Style::default().fg(Color::White))
                 .highlight_style(Style::new().italic())
                 .highlight_symbol(">>");
