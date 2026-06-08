@@ -25,15 +25,22 @@ fn main() -> io::Result<()> {
 
 #[derive(PartialEq)]
 enum VimMode { Search, Normal }
-// enum PlaybackMode { Pause, Play }
+#[derive(PartialEq)]
+enum PlaybackMode { Pause, Play, NotPlaying }
+
+enum MusicStreamEvent {
+    NewSongEvent(TrackDetails),
+    PlaybackEvent(PlaybackMode)
+}
 
 pub struct App {
     counter: u32,
     exit: bool,
     songs: Vec<TrackDetails>,
     selected: Option<TrackDetails>,
-    sender: Sender<TrackDetails>,
+    sender: Sender<MusicStreamEvent>,
     mode: VimMode,
+    playback_mode: PlaybackMode,
     search_buff: String,
     unfiltered_songs: Vec<TrackDetails>,
 }
@@ -47,39 +54,83 @@ impl App {
         let handle = rodio::DeviceSinkBuilder::open_default_sink()
             .expect("Could not find default audio stream");
 
-        let (sender, receiver): (Sender<TrackDetails>, Receiver<TrackDetails>) = channel();
+        let (sender, receiver): (Sender<MusicStreamEvent>, Receiver<MusicStreamEvent>) = channel();
 
+        // this is responsible for playback
+        // it's a bit unwheildy. gonna fix that... eventually
         let _thread_handle = thread::spawn(move || {
             let mut current_track = match receiver.recv() {
-                Ok(track_info) => track_info,
+                Ok(MusicStreamEvent::NewSongEvent(track_info)) => track_info,
+                Ok(MusicStreamEvent::PlaybackEvent(_)) => return,
                 Err(_) => return,
             };
 
             loop {
-
                 let song_path = current_track.song_path.clone();
-                let duration = Duration::from_secs(current_track.duration);
                 let file = BufReader::new(File::open(song_path).unwrap());
                 let player = rodio::play(handle.mixer(), file).unwrap();
+                let mut song_time_remaining = Duration::from_secs(current_track.duration);
 
-                match receiver.recv_timeout(duration) {
-                    Ok(new_track_info) => { 
-                        // got a new track, 
-                        // get rid of the current player
-                        // and start up a new one next iteration
-                        std::mem::drop(player);
-                        current_track = new_track_info;
-                    },
-                    Err(RecvTimeoutError::Timeout) => {
-                        // fisnished the song naturally, 
-                        // wait for a new one to start over again
-                        std::mem::drop(player);
-                        current_track = match receiver.recv() {
-                            Ok(track_info) => track_info,
-                            Err(_) => return,
+
+                // this loop will not terminate until:
+                // - a new song is selected 
+                // OR
+                // - the song is finished in it's entirety
+
+                let mut is_paused = false;
+
+                loop {
+                    let now = std::time::Instant::now();
+                    
+                    // if paused, wait indefinitely
+                    // don't touch song_time_remaining
+
+                    let event = if is_paused {
+                        match receiver.recv() {
+                            Ok(e) => Ok(e),
+                            Err(_) => Err(RecvTimeoutError::Disconnected),
                         }
-                    },
-                    Err(_) => break,
+                    } else {
+                        receiver.recv_timeout(song_time_remaining)
+                    };
+
+                    match event {
+                        Ok(MusicStreamEvent::NewSongEvent(new_track_info)) => {
+                            std::mem::drop(player);
+                            current_track = new_track_info;
+                            break;
+                        },
+                        Ok(MusicStreamEvent::PlaybackEvent(mode)) => {
+                            match mode {
+                                PlaybackMode::Pause => {
+                                    player.pause();
+                                    is_paused = true;
+                                    song_time_remaining = song_time_remaining.saturating_sub(now.elapsed());
+                                },
+                                PlaybackMode::Play => {
+                                    player.play();
+                                    is_paused = false;
+                                },
+                                _ => (),
+                            }
+                        },
+                        Err(RecvTimeoutError::Timeout) => {
+                            // fisnished the song naturally, 
+                            // wait for a new one to start over again
+                            //
+                            // TODO after a song is over the playback_mode 
+                            // should revert back to PlaybackMode::NotPlaying
+                            std::mem::drop(player);
+                            current_track = match receiver.recv() {
+                                Ok(MusicStreamEvent::NewSongEvent(track_info)) => track_info,
+                                Ok(MusicStreamEvent::PlaybackEvent(_)) => return,
+                                Err(_) => return,
+                            };
+
+                            break;
+                        },
+                        Err(_) => return,
+                    }
                 }
 
             }
@@ -92,6 +143,7 @@ impl App {
             selected: None,
             sender,
             mode: VimMode::Normal,
+            playback_mode: PlaybackMode::NotPlaying,
             search_buff: String::new(),
             unfiltered_songs: songs_vec_clone,
         }
@@ -126,6 +178,24 @@ impl App {
                 KeyCode::Char('j') => self.increment_counter(),
                 KeyCode::Char('k') => self.decrement_counter(),
                 KeyCode::Char('/') => self.mode = VimMode::Search,
+                KeyCode::Char('p') => {
+                    //pause play
+                    match self.playback_mode {
+                        PlaybackMode::NotPlaying => { return; },
+                        PlaybackMode::Play => {
+                            self.playback_mode = PlaybackMode::Pause;
+                            self.sender.send(MusicStreamEvent::PlaybackEvent( PlaybackMode::Pause ))
+                                .expect("Could not send through channel");
+                        },
+                        PlaybackMode::Pause => {  
+                            self.playback_mode = PlaybackMode::Play;
+                            self.sender.send(MusicStreamEvent::PlaybackEvent( PlaybackMode::Play ))
+                                .expect("Could not send through channel");
+                        },
+
+                    }
+
+                },
                 KeyCode::Esc => {
                     self.search_buff.clear();
                     self.mode = VimMode::Normal;
@@ -134,18 +204,18 @@ impl App {
                 KeyCode::Enter => {
                     self.selected = Some(self.songs[self.counter as usize].clone());
                     let selected = self.selected.clone();
-                    self.sender.send(selected.unwrap())
+                    self.sender.send(MusicStreamEvent::NewSongEvent(selected.unwrap()))
                         .expect("Could not send through channel");
+                    self.playback_mode = PlaybackMode::Play;
                 },
                 _ => {}
             }
         }
         else {
-
             match key_event.code {
                 KeyCode::Char(c) => {
                     self.search_buff.push(c);
-                    let result: Vec<TrackDetails> = self.songs
+                    let result: Vec<TrackDetails> = self.unfiltered_songs
                         .iter()
                         .cloned()
                         .filter(|x| {
@@ -154,15 +224,20 @@ impl App {
                             x.title.to_lowercase().contains(&self.search_buff.to_lowercase())
                         })
                         .collect();
+
                     self.songs = result;
                 }
                 KeyCode::Backspace => {
+                    if self.search_buff.is_empty() { return; }
                     self.search_buff.pop();
-                    self.songs = self.unfiltered_songs.clone();
-                    let result: Vec<TrackDetails> = self.songs
+                    let result: Vec<TrackDetails> = self.unfiltered_songs
                         .iter()
                         .cloned()
-                        .filter(|x| x.artist.contains(&self.search_buff))
+                        .filter(|x| {
+                            x.artist.to_lowercase().contains(&self.search_buff.to_lowercase()) ||
+                            x.album.to_lowercase().contains(&self.search_buff.to_lowercase()) ||
+                            x.title.to_lowercase().contains(&self.search_buff.to_lowercase())
+                        })
                         .collect();
                     self.songs = result;
                 },
