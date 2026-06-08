@@ -3,17 +3,20 @@ use std::fs::{self, DirEntry };
 use std::path::{ Path, PathBuf };
 use lofty::file::TaggedFile;
 use lofty::{prelude::*, read_from_path};
-use ratatui::prelude::{ Text, Line };
+use ratatui::prelude::{ Text };
+use std::cmp::{ Ord };
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TrackDetails {
     pub artist: String,
+    pub album: String,
+    pub track_no: u32,
     pub title: String,
     pub date: String,
-    pub track_no: u32,
     pub song_path: String,
     pub duration: u64,
 }
+
 
 impl From<TrackDetails> for Text<'static> {
     fn from(track: TrackDetails) -> Self {
@@ -27,14 +30,14 @@ impl From<TrackDetails> for Text<'static> {
     }
 }
 
-impl From<&TrackDetails> for Line<'static> {
+impl From<&TrackDetails> for Text<'static> {
     fn from(track: &TrackDetails) -> Self {
-        Line::from(format!(
-            "{} - {} ({}) [Track {}]",
+        Text::from(format!(
+            "{}\n{}\n{} [Track {}]",
             track.artist,
             track.title,
-            track.date,
-            track.track_no
+            track.album,
+            track.track_no,
         ))
     }
 }
@@ -81,8 +84,9 @@ fn get_audio_metadata(path: &Path) -> Result<TrackDetails, Box<dyn std::error::E
     let tag = tagged_file.primary_tag().unwrap();
     let title = tag.title().unwrap_or("Unknown Title".into()).to_string();
     let artist = tag.artist().unwrap_or("Unknown Artist".into()).to_string();
+    let album = tag.album().unwrap_or("Unknown Album".into()).to_string();
     let date = tag.date().unwrap_or(lofty::tag::items::Timestamp { year: (1900), month: (Some(1)), day: (Some(1)), hour: (Some(0)), minute: (Some(0)), second: (Some(0)) }).to_string();
     let track_no = tag.track().unwrap_or(0);
     let duration = tagged_file.properties().duration().as_secs();
-    Ok(TrackDetails {artist, title, date, track_no, song_path: path.to_string_lossy().to_string(), duration})
+    Ok(TrackDetails {artist, album, title, track_no, date, song_path: path.to_string_lossy().to_string(), duration})
 }

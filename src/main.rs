@@ -10,7 +10,7 @@ use std::sync::mpsc::channel;
 use std::sync::mpsc::{Sender, Receiver, RecvTimeoutError};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{
-    prelude::Line,
+    prelude::{ Text },
     DefaultTerminal, 
     Frame, 
     buffer::Buffer, 
@@ -24,7 +24,8 @@ fn main() -> io::Result<()> {
 }
 
 #[derive(PartialEq)]
-enum Mode { Search, Normal }
+enum VimMode { Search, Normal }
+// enum PlaybackMode { Pause, Play }
 
 pub struct App {
     counter: u32,
@@ -32,7 +33,7 @@ pub struct App {
     songs: Vec<TrackDetails>,
     selected: Option<TrackDetails>,
     sender: Sender<TrackDetails>,
-    mode: Mode,
+    mode: VimMode,
     search_buff: String,
     unfiltered_songs: Vec<TrackDetails>,
 }
@@ -41,6 +42,7 @@ impl App {
     pub fn new() -> App {
         let mut songs_vec : Vec<TrackDetails> = vec![];
         get_music_files(Path::new("/home/carlos/Music"), &mut songs_vec).unwrap();
+        songs_vec.sort();
         let songs_vec_clone = songs_vec.clone();
         let handle = rodio::DeviceSinkBuilder::open_default_sink()
             .expect("Could not find default audio stream");
@@ -69,14 +71,13 @@ impl App {
                         current_track = new_track_info;
                     },
                     Err(RecvTimeoutError::Timeout) => {
-                        // fisnished the song naturally, wait for a new one to start over again
+                        // fisnished the song naturally, 
+                        // wait for a new one to start over again
                         std::mem::drop(player);
                         current_track = match receiver.recv() {
                             Ok(track_info) => track_info,
                             Err(_) => return,
                         }
-
-
                     },
                     Err(_) => break,
                 }
@@ -90,7 +91,7 @@ impl App {
             songs: songs_vec,
             selected: None,
             sender,
-            mode: Mode::Normal,
+            mode: VimMode::Normal,
             search_buff: String::new(),
             unfiltered_songs: songs_vec_clone,
         }
@@ -119,15 +120,15 @@ impl App {
     }
 
     fn handle_key_event(&mut self, key_event: KeyEvent) {
-        if self.mode == Mode::Normal {
+        if self.mode == VimMode::Normal {
             match key_event.code {
                 KeyCode::Char('q') => self.exit(),
                 KeyCode::Char('j') => self.increment_counter(),
                 KeyCode::Char('k') => self.decrement_counter(),
-                KeyCode::Char('/') => self.mode = Mode::Search,
+                KeyCode::Char('/') => self.mode = VimMode::Search,
                 KeyCode::Esc => {
                     self.search_buff.clear();
-                    self.mode = Mode::Normal;
+                    self.mode = VimMode::Normal;
                     self.songs = self.unfiltered_songs.clone();
                 },
                 KeyCode::Enter => {
@@ -147,7 +148,11 @@ impl App {
                     let result: Vec<TrackDetails> = self.songs
                         .iter()
                         .cloned()
-                        .filter(|x| x.artist.contains(&self.search_buff))
+                        .filter(|x| {
+                            x.artist.to_lowercase().contains(&self.search_buff.to_lowercase()) ||
+                            x.album.to_lowercase().contains(&self.search_buff.to_lowercase()) ||
+                            x.title.to_lowercase().contains(&self.search_buff.to_lowercase())
+                        })
                         .collect();
                     self.songs = result;
                 }
@@ -163,11 +168,11 @@ impl App {
                 },
                 KeyCode::Enter => {
                     self.search_buff.clear();
-                    self.mode = Mode::Normal;
+                    self.mode = VimMode::Normal;
                 },
                 KeyCode::Esc => {
                     self.search_buff.clear();
-                    self.mode = Mode::Normal;
+                    self.mode = VimMode::Normal;
                     self.songs = self.unfiltered_songs.clone();
                 },
                 _ => {}
@@ -207,15 +212,15 @@ impl Widget for &App {
 
 
         if let Some(selected_track) = &self.selected {
-            Paragraph::new(Line::from(selected_track)).centered()
+            Paragraph::new(Text::from(selected_track)).centered()
                 .block(music_preview)
                 .render(preview_area, buf);
 
         }
 
         let selection_string = match self.mode {
-            Mode::Normal => String::from("Playlist"),
-            Mode::Search => format!("Searching: {}", self.search_buff),
+            VimMode::Normal => String::from("Playlist"),
+            VimMode::Search => format!("Searching: {}", self.search_buff),
         };
 
         let music_selection = List::new(self.songs.clone())
