@@ -1,7 +1,5 @@
 use music::*;
-//use rodio::MixerDeviceSink;
-//use std::sync::{Mutex, Arc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{io, thread};
 use std::io::BufReader;
 use std::fs::{File};
@@ -11,13 +9,15 @@ use std::sync::mpsc::{Sender, Receiver, RecvTimeoutError};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::{
     prelude::{ Text },
-    DefaultTerminal, 
-    Frame, 
-    buffer::Buffer, 
-    layout::{Constraint, Layout, Rect}, 
-    style::{ Color, Style }, 
+    DefaultTerminal,
+    Frame,
+    buffer::Buffer,
+    layout::{Constraint, Layout, Rect},
+    style::{ Color, Style },
     widgets::{Block, List, ListState, StatefulWidget, Widget, Paragraph}
 };
+
+//use ratatui_image::{Image, picker::Picker, Resize};
 
 fn main() -> io::Result<()> {
     ratatui::run(|terminal| App::new().run(terminal))
@@ -26,7 +26,7 @@ fn main() -> io::Result<()> {
 #[derive(PartialEq)]
 enum VimMode { Search, Normal }
 #[derive(PartialEq)]
-enum PlaybackMode { Pause, Play, NotPlaying }
+enum PlaybackMode { Paused, Play, NotPlaying }
 
 enum MusicStreamEvent {
     NewSongEvent(TrackDetails),
@@ -43,6 +43,9 @@ pub struct App {
     playback_mode: PlaybackMode,
     search_buff: String,
     unfiltered_songs: Vec<TrackDetails>,
+    last_key: char,
+    key_pressed_time: Instant,
+
 }
 
 impl App {
@@ -81,10 +84,9 @@ impl App {
 
                 loop {
                     let now = std::time::Instant::now();
-                    
+
                     // if paused, wait indefinitely
                     // don't touch song_time_remaining
-
                     let event = if is_paused {
                         match receiver.recv() {
                             Ok(e) => Ok(e),
@@ -102,7 +104,7 @@ impl App {
                         },
                         Ok(MusicStreamEvent::PlaybackEvent(mode)) => {
                             match mode {
-                                PlaybackMode::Pause => {
+                                PlaybackMode::Paused => {
                                     player.pause();
                                     is_paused = true;
                                     song_time_remaining = song_time_remaining.saturating_sub(now.elapsed());
@@ -146,6 +148,8 @@ impl App {
             playback_mode: PlaybackMode::NotPlaying,
             search_buff: String::new(),
             unfiltered_songs: songs_vec_clone,
+            last_key: ' ',
+            key_pressed_time: std::time::Instant::now(),
         }
     }
 
@@ -178,23 +182,35 @@ impl App {
                 KeyCode::Char('j') => self.increment_counter(),
                 KeyCode::Char('k') => self.decrement_counter(),
                 KeyCode::Char('/') => self.mode = VimMode::Search,
+                KeyCode::Char('g') => {
+                    let timeout = Duration::from_millis(300);
+                    if self.last_key == 'g' && self.key_pressed_time.elapsed() < timeout {
+                        self.counter = 0;
+                        self.last_key = ' ';
+                    }
+                    else {
+                        self.last_key = 'g';
+                        self.key_pressed_time = Instant::now();
+                    }
+                },
+                KeyCode::Char('G') => {
+                    self.counter = ( self.songs.len() - 1 ) as u32;
+                }
                 KeyCode::Char('p') => {
                     //pause play
                     match self.playback_mode {
                         PlaybackMode::NotPlaying => { return; },
                         PlaybackMode::Play => {
-                            self.playback_mode = PlaybackMode::Pause;
-                            self.sender.send(MusicStreamEvent::PlaybackEvent( PlaybackMode::Pause ))
+                            self.playback_mode = PlaybackMode::Paused;
+                            self.sender.send(MusicStreamEvent::PlaybackEvent( PlaybackMode::Paused ))
                                 .expect("Could not send through channel");
                         },
-                        PlaybackMode::Pause => {  
+                        PlaybackMode::Paused => {  
                             self.playback_mode = PlaybackMode::Play;
                             self.sender.send(MusicStreamEvent::PlaybackEvent( PlaybackMode::Play ))
                                 .expect("Could not send through channel");
                         },
-
                     }
-
                 },
                 KeyCode::Esc => {
                     self.search_buff.clear();
@@ -202,6 +218,8 @@ impl App {
                     self.songs = self.unfiltered_songs.clone();
                 },
                 KeyCode::Enter => {
+                    if self.songs.is_empty() { return; }
+
                     self.selected = Some(self.songs[self.counter as usize].clone());
                     let selected = self.selected.clone();
                     self.sender.send(MusicStreamEvent::NewSongEvent(selected.unwrap()))
@@ -225,6 +243,7 @@ impl App {
                         })
                         .collect();
 
+                    self.counter = 0;
                     self.songs = result;
                 }
                 KeyCode::Backspace => {
@@ -239,6 +258,7 @@ impl App {
                             x.title.to_lowercase().contains(&self.search_buff.to_lowercase())
                         })
                         .collect();
+                    self.counter = 0;
                     self.songs = result;
                 },
                 KeyCode::Enter => {
@@ -246,6 +266,7 @@ impl App {
                     self.mode = VimMode::Normal;
                 },
                 KeyCode::Esc => {
+                    self.counter = 0;
                     self.search_buff.clear();
                     self.mode = VimMode::Normal;
                     self.songs = self.unfiltered_songs.clone();
@@ -275,7 +296,7 @@ impl Widget for &App {
             Constraint::Percentage(50),
         ]);
 
-        let [selection_area, preview_area] = chunks.areas(area);
+        let [selection_area, lower_area] = chunks.areas(area);
 
 
         let mut selection_state = ListState::default()
@@ -289,8 +310,7 @@ impl Widget for &App {
         if let Some(selected_track) = &self.selected {
             Paragraph::new(Text::from(selected_track)).centered()
                 .block(music_preview)
-                .render(preview_area, buf);
-
+                .render(lower_area, buf);
         }
 
         let selection_string = match self.mode {

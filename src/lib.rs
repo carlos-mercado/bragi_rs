@@ -79,6 +79,7 @@ pub fn get_music_files(path: &Path, songs: &mut Vec<TrackDetails>) -> io::Result
     Ok(())
 }
 
+
 fn get_audio_metadata(path: &Path) -> Result<TrackDetails, Box<dyn std::error::Error>> {
     let tagged_file : TaggedFile = read_from_path(path)?;
     let tag = tagged_file.primary_tag().unwrap();
@@ -87,6 +88,7 @@ fn get_audio_metadata(path: &Path) -> Result<TrackDetails, Box<dyn std::error::E
     let album = tag.album().unwrap_or("Unknown Album".into()).to_string();
     let date = tag.date().unwrap_or(lofty::tag::items::Timestamp { year: (1900), month: (Some(1)), day: (Some(1)), hour: (Some(0)), minute: (Some(0)), second: (Some(0)) }).to_string();
     let track_no = tag.track().unwrap_or(0);
+
     let duration = tagged_file.properties().duration().as_secs();
     Ok(TrackDetails {artist, album, title, track_no, date, song_path: path.to_string_lossy().to_string(), duration})
 }
