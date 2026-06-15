@@ -6,20 +6,22 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+use std::collections::{BTreeSet};
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::DefaultTerminal;
 use ratatui::Frame;
 
-use music::{TrackDetails, filter_tracks, get_music_files};
-
+use music::{TrackDetails, Album, build_albums, filter_tracks, get_music_files};
 use crate::types::{MusicStreamEvent, PlaybackMode, VimMode};
 
 pub struct App {
     pub counter: u32,
     pub exit: bool,
     pub songs: Vec<TrackDetails>,
-    pub selected: Option<TrackDetails>,
+    pub albums: Vec<Album>,
+    pub song_selected: Option<TrackDetails>,
+    pub album_selected: Option<BTreeSet<TrackDetails>>,
     pub play_start: Option<Instant>,
     pub elapsed_before_paused: Duration,
     pub sender: Sender<MusicStreamEvent>,
@@ -39,6 +41,7 @@ impl App {
         get_music_files(Path::new("/home/carlos/Music"), &mut songs_vec).unwrap();
         songs_vec.sort();
         let songs_vec_clone = songs_vec.clone();
+        let albums = build_albums(&songs_vec_clone);
         let audio_handle = rodio::DeviceSinkBuilder::open_default_sink()
             .expect("Could not find default audio stream");
         let (sender, receiver): (Sender<MusicStreamEvent>, Receiver<MusicStreamEvent>) = channel();
@@ -50,7 +53,9 @@ impl App {
             counter: 0,
             exit: false,
             songs: songs_vec,
-            selected: None,
+            albums,
+            song_selected: None,
+            album_selected: None,
             play_start,
             elapsed_before_paused,
             sender,
@@ -110,7 +115,12 @@ impl App {
                     }
                 }
                 KeyCode::Char('G') => {
-                    self.counter = (self.songs.len() - 1) as u32;
+                    if self.album_selected == None {
+                        self.counter = (self.albums.len() - 1) as u32;
+                    }
+                    else {
+                        self.counter = (self.songs.len() - 1) as u32;
+                    }
                 }
                 KeyCode::Char('p') => {
                     let binding = Arc::clone(&self.playback_mode);
@@ -137,20 +147,36 @@ impl App {
                     self.search_buff.clear();
                     self.mode = VimMode::Normal;
                     self.songs = self.unfiltered_songs.clone();
+                    self.album_selected = None;
                 }
                 KeyCode::Enter => {
-                    if self.songs.is_empty() {
-                        return;
+                    if self.songs.is_empty() || self.albums.is_empty() { return; }
+
+                    if self.album_selected == None {
+                        self.album_selected = Some(self.albums[self.counter as usize].clone().songs);
+                        self.counter = 0;
                     }
-                    let binding = Arc::clone(&self.playback_mode);
-                    let mut state = binding.lock().unwrap();
-                    self.selected = Some(self.songs[self.counter as usize].clone());
-                    let selected = self.selected.clone();
-                    self.sender
-                        .send(MusicStreamEvent::NewSongEvent(selected.unwrap()))
-                        .expect("Could not send through channel");
-                    *state = PlaybackMode::Playing;
-                    self.play_start = Some(Instant::now());
+                    else {
+                        // user chose a song
+                        let binding = Arc::clone(&self.playback_mode);
+                        let mut state = binding.lock().unwrap();
+                        self.song_selected = self.album_selected
+                            .as_ref()
+                            .and_then(|set| set
+                                .iter()
+                                .nth(self.counter as usize)
+                                .cloned()
+                            );
+
+                        let selected = self.song_selected.clone();
+                        self.sender
+                            .send(MusicStreamEvent::NewSongEvent(selected.unwrap()))
+                            .expect("Could not send through channel");
+                        *state = PlaybackMode::Playing;
+                        self.play_start = Some(Instant::now());
+                        self.elapsed_before_paused = Duration::from_secs(0);
+                    }
+
                 }
                 _ => {}
             }
@@ -172,6 +198,11 @@ impl App {
                 KeyCode::Enter => {
                     self.search_buff.clear();
                     self.mode = VimMode::Normal;
+                    self.album_selected = Some(self.songs
+                        .iter()
+                        .cloned()
+                        .collect::<BTreeSet<_>>()
+                        );
                 }
                 KeyCode::Esc => {
                     self.counter = 0;
@@ -193,7 +224,12 @@ impl App {
     }
 
     fn increment_counter(&mut self) {
-        self.counter = std::cmp::min((self.songs.len() - 1) as u32, self.counter + 1);
+        if self.album_selected == None {
+            self.counter = std::cmp::min((self.albums.len() - 1) as u32, self.counter + 1);
+        }
+        else {
+            self.counter = std::cmp::min((self.songs.len() - 1) as u32, self.counter + 1);
+        }
     }
 
     fn decrement_counter(&mut self) {
@@ -257,6 +293,8 @@ impl App {
                             _ => {}
                         },
                         Err(RecvTimeoutError::Timeout) => {
+                            // played song to it's conclusion
+                            // clean up app state
                             let mut state = binding.lock().unwrap();
                             *state = PlaybackMode::NotPlaying;
                         }
@@ -267,3 +305,4 @@ impl App {
         });
     }
 }
+// self.elapsed_before_paused + self.play_start.unwrap_or(Instant::now()).elapsed()

@@ -1,3 +1,4 @@
+use music::TrackDetails;
 use ratatui::prelude::Text;
 use ratatui::{
     buffer::Buffer,
@@ -25,7 +26,7 @@ impl Widget for &App {
 
         let binding = Arc::clone(&self.playback_mode);
         let state = binding.lock().unwrap();
-        if let Some(selected_track) = &self.selected {
+        if let Some(selected_track) = &self.song_selected {
             if *state == PlaybackMode::Playing || *state == PlaybackMode::Paused {
                 Paragraph::new(Text::from(selected_track))
                     .centered()
@@ -40,11 +41,37 @@ impl Widget for &App {
             VimMode::Search => format!("Searching: {}", self.search_buff),
         };
 
-        let music_selection = List::new(self.songs.clone())
-            .block(Block::bordered().title_top(list_title))
-            .style(ratatui::style::Style::default().fg(Color::White))
-            .highlight_style(Style::new().italic())
-            .highlight_symbol(">>");
+        let music_selection;
+
+        if self.mode == VimMode::Search {
+            music_selection = List::new(&self.songs)
+                .block(Block::bordered().title_top(list_title))
+                .style(ratatui::style::Style::default().fg(Color::White))
+                .highlight_style(Style::new().italic())
+                .highlight_symbol(">>");
+
+        }
+        else if self.album_selected == None {
+            // havent selected an album
+            music_selection = List::new(&self.albums)
+                .block(Block::bordered().title_top(list_title))
+                .style(ratatui::style::Style::default().fg(Color::White))
+                .highlight_style(Style::new().italic())
+                .highlight_symbol(">>");
+        }
+        else {
+            let songs: Vec<TrackDetails> = self.album_selected
+                .iter()
+                .flatten()
+                .cloned()
+                .collect();
+
+            music_selection = List::new(&songs)
+                .block(Block::bordered().title_top(list_title))
+                .style(ratatui::style::Style::default().fg(Color::White))
+                .highlight_style(Style::new().italic())
+                .highlight_symbol(">>");
+        }
 
         let binding = Arc::clone(&self.playback_mode);
         let playback_state = binding.lock().unwrap();
@@ -56,7 +83,7 @@ impl Widget for &App {
                 .filled_symbol(symbols::line::THICK_HORIZONTAL)
                 .ratio(
                     self.get_time_elapsed().as_secs_f64()
-                        / self.selected.clone().unwrap().duration as f64,
+                        / self.song_selected.clone().unwrap().duration as f64,
                 );
             progress_bar.render(progress_bar_area, buf);
         }

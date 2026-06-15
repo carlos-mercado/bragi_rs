@@ -1,10 +1,20 @@
 use lofty::file::TaggedFile;
 use lofty::{prelude::*, read_from_path};
-use ratatui::prelude::Text;
+use ratatui::prelude::{Text};
 use std::cmp::Ord;
 use std::fs::{self, DirEntry};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::collections::{BTreeSet, HashMap};
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Album {
+    artist: String,
+    album: String,
+    //duration: u64,
+    selected: bool,
+    pub songs: BTreeSet<TrackDetails>
+}
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TrackDetails {
@@ -17,11 +27,21 @@ pub struct TrackDetails {
     pub duration: u64,
 }
 
+impl From<&Album> for Text<'static> {
+    fn from(album: &Album) -> Self {
+        Text::from(format!(
+            "{} - {}",
+            album.artist, album.album
+        ))
+    }
+
+}
+
 impl From<TrackDetails> for Text<'static> {
     fn from(track: TrackDetails) -> Self {
         Text::from(format!(
-            "{} - {} ({}) [Track {}]",
-            track.artist, track.title, track.date, track.track_no,
+            "{}\n{}\n{} [Track {}]",
+            track.artist, track.title, track.album, track.track_no,
         ))
     }
 }
@@ -29,10 +49,35 @@ impl From<TrackDetails> for Text<'static> {
 impl From<&TrackDetails> for Text<'static> {
     fn from(track: &TrackDetails) -> Self {
         Text::from(format!(
-            "{}\n{}\n{} [Track {}]",
-            track.artist, track.title, track.album, track.track_no,
+            "{} - {} ({}) [Track {}]",
+            track.artist, track.title, track.date, track.track_no,
         ))
     }
+
+}
+
+pub fn build_albums(tracks: &Vec<TrackDetails>) -> Vec<Album> {
+    // (artist, album) => 
+    let mut album_to_songs: HashMap<(&String, &String), BTreeSet<TrackDetails>> = HashMap::new();
+    for track in tracks {
+        album_to_songs
+            .entry((&track.artist, &track.album))
+            .or_default()
+            .insert(track.clone());
+    }
+
+    let mut albums = Vec::new();
+    for ((artist, album), songs) in album_to_songs {
+        albums.push(Album {
+            artist: artist.to_string(),
+            album: album.to_string(),
+            selected: false,
+            songs,
+        });
+    }
+
+    albums.sort();
+    albums
 }
 
 /// Filter a list of tracks by a query string.
